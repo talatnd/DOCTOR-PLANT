@@ -1,0 +1,71 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{db}/documents {
+    function adm() { return get(/databases/$(db)/documents/admins/$(request.auth.uid)).data; }
+    function isAdm() { return request.auth != null && exists(/databases/$(db)/documents/admins/$(request.auth.uid)); }
+    function rankOf(r) { return r == 'owner' ? 100 : (r == 'pending' ? 0 : get(/databases/$(db)/documents/roles/$(r)).data.rank); }
+    function can(p) {
+      return isAdm() && (adm().role == 'owner' || (adm().role != 'pending'
+        && exists(/databases/$(db)/documents/roles/$(adm().role))
+        && get(/databases/$(db)/documents/roles/$(adm().role)).data.perms.get(p, false) == true));
+    }
+
+    // الأعضاء: الحساب الجديد بيدخل "بانتظار التفعيل" برمز الدعوة، والمالك برمز المالك (القواعد خاصة وما بتنعرض للزوار)
+    match /admins/{uid} {
+      allow read: if request.auth != null && (request.auth.uid == uid || can('manageMembers'));
+      allow create, update: if request.auth != null && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['name','code','role'])
+        && request.resource.data.name is string
+        && request.resource.data.name.size() > 0 && request.resource.data.name.size() <= 30
+        && ((request.resource.data.code == 'DP-MKDA-FZRG-V496' && request.resource.data.role == 'pending')
+         || (request.resource.data.code == 'OW-P2LR-MEUD-MX2L' && request.resource.data.role == 'owner'));
+      // تغيير رتبة عضو: فقط لمن عنده صلاحية، وفقط لأعضاء أدنى رتبة منه، وبرتبة أدنى منه
+      allow update: if can('manageMembers') && request.auth.uid != uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['role'])
+        && rankOf(resource.data.role) < rankOf(adm().role)
+        && rankOf(request.resource.data.role) < rankOf(adm().role);
+      allow delete: if can('manageMembers') && request.auth.uid != uid
+        && rankOf(resource.data.role) < rankOf(adm().role);
+    }
+
+    // الأدوار: المالك فقط يعدّلها، وكل المسؤولين يقرؤونها
+    match /roles/{rid} {
+      allow read: if isAdm();
+      allow create, update: if isAdm() && adm().role == 'owner' && rid != 'owner' && rid != 'pending'
+        && request.resource.data.keys().hasOnly(['name','rank','perms'])
+        && request.resource.data.name is string && request.resource.data.name.size() <= 20
+        && request.resource.data.rank is int && request.resource.data.rank >= 1 && request.resource.data.rank <= 99
+        && request.resource.data.perms is map;
+      allow delete: if isAdm() && adm().role == 'owner';
+    }
+
+    // التقييمات: الكل يقرأ ويضيف (بشروط)، ومن عنده صلاحية يحذف
+    match /reviews/{id} {
+      allow read: if true;
+      allow create: if request.resource.data.keys().hasOnly(['r','t','u','d'])
+        && request.resource.data.r is int && request.resource.data.r >= 0 && request.resource.data.r <= 5
+        && request.resource.data.t is string && request.resource.data.t.size() <= 500
+        && request.resource.data.u is string && request.resource.data.u.size() <= 30
+        && request.resource.data.d == request.time;
+      allow update: if false;
+      allow delete: if can('deleteReview');
+    }
+
+    // السجل: لا أحد يعدّل أو يمسح
+    match /logs/{id} {
+      allow read: if can('viewLog');
+      allow create: if isAdm() && adm().role != 'pending'
+        && request.resource.data.uid == request.auth.uid && request.resource.data.t == request.time;
+      allow update, delete: if false;
+    }
+
+    // عدّاد الزوار: الزائر يزيد بمقدار 1 فقط
+    match /stats/{id} {
+      allow read, create: if can('viewStats');
+      allow update: if resource.data.keys().hasOnly(['visits','visitors']) && (
+          (request.resource.data.visits == resource.data.visits + 1 && request.resource.data.visitors == resource.data.visitors) ||
+          (request.resource.data.visitors == resource.data.visitors + 1 && request.resource.data.visits == resource.data.visits));
+      allow delete: if false;
+    }
+  }
+}
