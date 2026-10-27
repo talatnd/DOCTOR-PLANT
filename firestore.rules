@@ -1,0 +1,44 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{db}/documents {
+    function isAdmin() {
+      return request.auth != null && exists(/databases/$(db)/documents/admins/$(request.auth.uid));
+    }
+    // المسؤولون: ينشئ المسؤول حسابه من الموقع برمز الدعوة (هالقواعد خاصة وما بتنعرض للزوار)
+    match /admins/{uid} {
+      allow read: if request.auth != null && request.auth.uid == uid;
+      allow create: if request.auth != null && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['name','code'])
+        && request.resource.data.code == 'DP-MKDA-FZRG-V496'
+        && request.resource.data.name is string
+        && request.resource.data.name.size() > 0 && request.resource.data.name.size() <= 30;
+      allow update, delete: if false;
+    }
+    // التقييمات: الكل يقرأ ويضيف (بشروط)، المسؤول فقط يحذف
+    match /reviews/{id} {
+      allow read: if true;
+      allow create: if request.resource.data.keys().hasOnly(['r','t','u','d'])
+        && request.resource.data.r is int && request.resource.data.r >= 0 && request.resource.data.r <= 5
+        && request.resource.data.t is string && request.resource.data.t.size() <= 500
+        && request.resource.data.u is string && request.resource.data.u.size() <= 30
+        && request.resource.data.d == request.time;
+      allow update: if false;
+      allow delete: if isAdmin();
+    }
+    // السجل: المسؤولون فقط، ولا أحد يعدّل أو يمسح
+    match /logs/{id} {
+      allow read: if isAdmin();
+      allow create: if isAdmin() && request.resource.data.uid == request.auth.uid && request.resource.data.t == request.time;
+      allow update, delete: if false;
+    }
+    // عدّاد الزوار: الزائر يزيد بمقدار 1 فقط
+    match /stats/{id} {
+      allow read, create: if isAdmin();
+      allow update: if isAdmin() || (
+        resource.data.keys().hasOnly(['visits','visitors']) && (
+          (request.resource.data.visits == resource.data.visits + 1 && request.resource.data.visitors == resource.data.visitors) ||
+          (request.resource.data.visitors == resource.data.visitors + 1 && request.resource.data.visits == resource.data.visits)));
+      allow delete: if false;
+    }
+  }
+}
